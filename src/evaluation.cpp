@@ -64,25 +64,25 @@ bool tau_eval(const Vector<double, 13> &x, double tau) {
 
     solver.compute(P1.reverse());
     if (solver.roots().real().cwiseSign().cwiseMax(0).any()) {
-        std::cout << "P1: " << P1 << std::endl;
+        // std::cout << "P1: " << P1 << std::endl;
         return false;
     }
 
     solver.compute(P2.reverse());
     if (solver.roots().real().cwiseSign().cwiseMax(0).any()) {
-        std::cout << "P2: " << P2 << std::endl;
+        // std::cout << "P2: " << P2 << std::endl;
         return false;
     }
 
     solver.compute(P3.reverse());
     if (solver.roots().real().cwiseSign().cwiseMax(0).any()) {
-        std::cout << "P3: " << P3 << std::endl;
+        // std::cout << "P3: " << P3 << std::endl;
         return false;
     }
 
     solver.compute(P4.reverse());
     if (solver.roots().real().cwiseSign().cwiseMax(0).any()) {
-        std::cout << "P4: " << P4 << std::endl;
+        // std::cout << "P4: " << P4 << std::endl;
         return false;
     }
 

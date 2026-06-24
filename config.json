@@ -1,0 +1,7 @@
+{
+    "total test": 100,
+    "max iteration": 1000,
+    "population": 100,
+    "fitness target": 1e-4,
+    "log file": "log/log.txt"
+}

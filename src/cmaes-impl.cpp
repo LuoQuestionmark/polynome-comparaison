@@ -1,20 +1,27 @@
 #include <Eigen/Eigen>
+#include <asm-generic/errno-base.h>
 #include <bits/types/FILE.h>
 #include <cassert>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
 #include <libcmaes/cmaes.h>
 #include <libcmaes/cmastopcriteria.h>
-#include <libcmaes/esoptimizer.h>
 #include <limits>
 #include <random>
+#include <vector>
+
+#include "nlohmann/json.hpp" // config using json file
 
 #include "evaluation.h"
 #include "regulator.h"
 
 using namespace libcmaes;
 using namespace Eigen;
+using json = nlohmann::json;
+
+FILE *GLOBAL_LOG_FILE_PTR = NULL;
 
 // Source - https://stackoverflow.com/a/2704552
 // Posted by rep_movsd, modified by community. See post 'Timeline' for change
@@ -24,6 +31,7 @@ double fRand(double fMin, double fMax) {
     return fMin + f * (fMax - fMin);
 }
 
+// fitness function, using the norm2 value of $Ay - b$ as the goal
 FitFunc fit = [](const double *x, const int N) {
     assert(N == 13);
 
@@ -44,7 +52,10 @@ FitFunc fit = [](const double *x, const int N) {
     return val;
 };
 
-bool launch_solver(int lambda, int max_iteration) {
+// action of launching the solver a single time;
+// this function will be called multiple times for one configuration to measure
+// the average performance
+bool launch_solver(int lambda, int max_iteration, double fitness_target) {
     std::default_random_engine
         random_engine; // for init variable x with random value
 
@@ -89,55 +100,108 @@ bool launch_solver(int lambda, int max_iteration) {
     // cmaparams.set_stopping_criteria(CMAStopCritType::STAGNATION, false);
     // cmaparams.set_stopping_criteria(CMAStopCritType::EQUALFUNVALS, false);
     // cmaparams.set_stopping_criteria(CMAStopCritType::, false);
-    cmaparams.set_ftarget(1e-6);
-    cmaparams.set_quiet(false);
-    cmaparams.set_algo(IPOP_CMAES);
-
+    cmaparams.set_ftarget(fitness_target);
+    // cmaparams.set_quiet(false);
+    // cmaparams.set_algo(IPOP_CMAES);
     // cmaparams._algo = BIPOP_CMAES;
+
     CMASolutions cmasols = cmaes<GenoPheno<pwqBoundStrategy>>(fit, cmaparams);
 
-    std::cout << "best solution\n"
-              << gp.pheno(cmasols.get_best_seen_candidate().get_x_dvec())
-              << std::endl;
-    std::cout << "optimization took " << cmasols.elapsed_time() / 1000.0
-              << " seconds\n";
-    std::cout << cmasols.status_msg() << std::endl;
+    // std::cout << "best solution\n"
+    //           << gp.pheno(cmasols.get_best_seen_candidate().get_x_dvec())
+    //           << std::endl;
+    // std::cout << "optimization took " << cmasols.elapsed_time() / 1000.0
+    //           << " seconds\n";
+    // std::cout << cmasols.status_msg() << std::endl;
 
     cmasols.sort_candidates();
-
-    auto candidate = cmasols.candidates()[0].get_x_pheno_dvec(cmaparams);
-    fit(candidate.data(), 13);
 
     double best = cmasols.get_candidate(0).get_fvalue();
     double worst =
         cmasols.get_candidate(cmasols.candidates().size() - 1).get_fvalue();
 
-    printf("%.8f, %.8f\n", best, worst);
+    if (GLOBAL_LOG_FILE_PTR) {
+        fprintf(GLOBAL_LOG_FILE_PTR, "min err: %.8f, max err: %.8f\n", best,
+                worst);
+    }
 
     Vector<double, 13> best_vector(
         gp.pheno(cmasols.get_best_seen_candidate().get_x_dvec()));
 
-    if (tau_eval(best_vector, 1)) {
-        puts("stable");
-    } else {
-        puts("not stable");
-    }
-
-    return cmasols.run_status() == 1;
+    bool stable = tau_eval(best_vector, 1);
+    return stable;
 }
 
 int main(int argc, char **argv) {
-    const int total_test = 1;
-    int total_success    = 0;
+    if (argc <= 1) {
+        errno = EINVAL;
+        perror("usage: cmaes-impl <config file.json>");
+        exit(EXIT_FAILURE);
+    }
 
-    int population_aka_lambda = 500;
-    int max_iteration         = 1000;
+    printf("Load config file %s...\n", argv[1]);
+
+    std::ifstream config(argv[1]);
+    if (!config.good()) {
+        errno = ENOENT;
+        perror("cannot open json config file");
+        exit(EXIT_FAILURE);
+    }
+
+    json config_data = json::parse(config);
+
+    const std::vector<std::string> fields = { "total test", "population",
+                                              "max iteration", "fitness target",
+                                              "log file" };
+    for (const std::string &key : fields) {
+        if (!config_data.contains(key)) {
+            errno = ENOKEY;
+            fprintf(stderr, "config file does not contain key: %s\n",
+                    key.c_str());
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    int total_test    = config_data["total test"];
+    int total_success = 0;
+
+    int population        = config_data["population"];
+    int max_iteration     = config_data["max iteration"];
+    double fitness_target = config_data["fitness target"];
+
+    puts("Config load OK");
+
+    std::string log     = config_data["log file"];
+    GLOBAL_LOG_FILE_PTR = fopen(log.c_str(), "w+");
+
+    if (!GLOBAL_LOG_FILE_PTR) {
+        perror("cannot create log file");
+        exit(EXIT_FAILURE);
+    }
+
+    puts("Log file creation OK");
+
+    if (GLOBAL_LOG_FILE_PTR) {
+        fprintf(GLOBAL_LOG_FILE_PTR,
+                "total test count: %d, population size: %d, maximum iteration: "
+                "%d, fitness target: %.3e\n",
+                total_test, population, max_iteration, fitness_target);
+    }
+
+    puts("Start testing");
 
     for (int i = 0; i < total_test; i++) {
-        if (launch_solver(population_aka_lambda, max_iteration) == true) {
+        printf("iteration no. %d\n", i + 1);
+        if (launch_solver(population, max_iteration, fitness_target) == true) {
             total_success += 1;
         }
     }
 
-    printf("success rate: %f\n", (float)total_success / (float)total_test);
+    puts("Finish testing");
+
+    if (GLOBAL_LOG_FILE_PTR) {
+        fprintf(GLOBAL_LOG_FILE_PTR, "success rate: %f\n",
+                (float)total_success / (float)total_test);
+        fclose(GLOBAL_LOG_FILE_PTR);
+    }
 }
